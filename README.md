@@ -104,13 +104,39 @@ Run **Diagnostics → Diagnose a day** to confirm:
 
 ## Menu reference
 
-- **Sync now (incremental)** — refresh recent window + extend backfill + re-render.
-- **Rebuild everything (full)** — wipe `_store` + state, resync from scratch.
+- **Sync now (add new + reconcile last 30 days)** — the everyday action: adds any
+  new days and re-pulls (reconciles) the last `REFRESH_DAYS` on top of the stored
+  history. This is also the on-demand "reconcile" button.
+- **Rebuild all data — background (watch _status)** — re-pull everything from
+  scratch via a background job so the sheet isn't frozen; progress streams into
+  the `_status` tab live. Use this after a fix or to reset.
+- **Rebuild all data — foreground** — same rebuild, but runs inline from the menu
+  (shows a "running" dialog until done).
 - **Refresh today only** — cheap re-pull of just today.
 - **Automation** — set up / status / remove the triggers.
 - **Slack** — send the yesterday summary / today pacing now.
-- **Diagnostics** — validate key, list channels, diagnose a day, discover pixel
-  columns, show backfill state.
+- **Diagnostics** — validate key, list channels, diagnose a day, probe revenue,
+  discover pixel columns, show backfill state.
+
+## Status tab
+
+`_status` (created automatically) shows a headline of the current/last action, a
+timestamp, and a newest-first activity log. It updates live during a run — watch
+it during a rebuild — and persists afterward, so you can confirm the automated
+daily sync ran and what it did.
+
+## How the daily automation behaves
+
+Once **Automation → Set up / repair automation** is run, a trigger fires
+`sync` daily at ~6am. Each run:
+
+1. **Adds** any new day(s) since the last run.
+2. **Reconciles** the last `REFRESH_DAYS` (30) days — re-pulls them so late
+   attribution (up to the 28-day window) is captured. Older days are frozen.
+3. Rewrites the `_store` and re-renders every tab.
+
+Nothing is re-pulled beyond the recent window, so daily runs stay fast. The
+stored history only grows. To force a reconcile any time, use **Sync now**.
 
 ## Config knobs (`Code.gs`)
 

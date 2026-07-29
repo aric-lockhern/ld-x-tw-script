@@ -152,8 +152,9 @@ var HEAD_BG = '#1b2a4a', HEAD_FG = '#ffffff';
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('Triple Whale')
-    .addItem('Sync now (incremental)', 'sync')
-    .addItem('Rebuild everything (full)', 'fullResync')
+    .addItem('Sync now (add new + reconcile last 30 days)', 'sync')
+    .addItem('Rebuild all data — background (watch _status)', 'rebuildInBackground')
+    .addItem('Rebuild all data — foreground', 'fullResync')
     .addItem('Refresh today only', 'refreshToday')
     .addSeparator()
     .addSubMenu(ui.createMenu('Automation')
@@ -196,12 +197,16 @@ function _syncLocked_() {
   var props = PropertiesService.getScriptProperties();
 
   // 1) Recompute the recent, still-changing window (today .. today-REFRESH_DAYS).
+  progress_('Starting — reconciling the last ' + REFRESH_DAYS + ' days (today back)…');
   var refreshed = 0;
   for (var i = 0; i < REFRESH_DAYS; i++) {
     if (Date.now() - t0 > MAX_RUNTIME_MS) break;
     var d = dateStr_(-i);
     days[d] = fetchDayRows_(d);
     refreshed++;
+    if (refreshed === 1 || refreshed % 10 === 0 || refreshed === REFRESH_DAYS) {
+      progress_('Reconciling recent days: ' + refreshed + '/' + REFRESH_DAYS + '  (' + d + ')');
+    }
     Utilities.sleep(30);
   }
 
@@ -214,6 +219,8 @@ function _syncLocked_() {
   if (!dataStart) {
     var cursor = dateAdd_(oldest, -1);         // first day older than we've covered
     var floor  = BACKFILL_START || dateStr_(-BACKFILL_MAX_DAYS);   // stop here
+    var total  = Math.max(0, daysBetween_(floor, cursor) + 1);     // days left to backfill
+    if (cursor >= floor) progress_('Backfilling history: ' + cursor + ' → ' + floor + '  (~' + total + ' days)…');
     while (cursor >= floor) {
       if (Date.now() - t0 > MAX_RUNTIME_MS) { stopped = cursor; break; }
       var rows = fetchDayRows_(cursor);
@@ -224,7 +231,9 @@ function _syncLocked_() {
       // The empty-run "start of data" heuristic only applies in open-ended mode.
       // With an explicit BACKFILL_START we always fill straight through to it.
       if (!BACKFILL_START && emptyRun >= EMPTY_RUN_TO_STOP) { dataStart = true; break; }
-      if (backfilled % 10 === 0) progress_('Backfill: reached ' + cursor + '…');
+      if (backfilled === 1 || backfilled % 5 === 0) {
+        progress_('Backfilling: ' + backfilled + '/' + total + ' days  (at ' + cursor + ')');
+      }
       cursor = dateAdd_(cursor, -1);
       Utilities.sleep(30);
     }
@@ -242,7 +251,9 @@ function _syncLocked_() {
   props.setProperty(PROP_DATA_START, dataStart ? 'true' : 'false');
 
   // 3) Persist the store, then render every tab from it.
+  progress_('Saving ' + Object.keys(days).length + ' days to the store…');
   writeStore_(days);
+  progress_('Building the tabs…');
   renderAll_(days, oldest, today);
 
   // 4) If the backfill isn't finished and we stopped on the clock, resume soon.
@@ -256,17 +267,36 @@ function _syncLocked_() {
   }
 }
 
-// Full rebuild: wipe the store + state and sync from scratch.
+// Kick off a full rebuild in the BACKGROUND via a one-shot trigger, so the
+// spreadsheet UI isn't blocked and the _status tab updates live while it runs.
+function rebuildInBackground() {
+  clearRebuildTriggers_();
+  ScriptApp.newTrigger('fullResync').timeBased().after(3000).create();
+  try { setStatus_('Rebuild scheduled — starting in a few seconds. Watch this tab.'); } catch (e) {}
+  SpreadsheetApp.getUi().alert('Rebuild started in the background.\n\n' +
+    'Open the "_status" tab — it updates live (about one line every few seconds) as each day is pulled. ' +
+    'You can close this dialog and keep working; the data tabs refresh when it finishes (~a few minutes).');
+}
+
+// Full rebuild: wipe the store + state and sync from scratch. Safe to run from
+// the menu (foreground) or from the background trigger above.
 function fullResync() {
   assertShop_();
+  clearRebuildTriggers_();                      // remove the one-shot that launched us
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(STORE_SHEET);
   if (sh) ss.deleteSheet(sh);
   var props = PropertiesService.getScriptProperties();
   props.deleteProperty(PROP_OLDEST);
   props.deleteProperty(PROP_DATA_START);
-  progress_('Full rebuild: store cleared, syncing from scratch…');
+  progress_('Full rebuild: store cleared, pulling from scratch…');
   sync();
+}
+
+function clearRebuildTriggers_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'fullResync') ScriptApp.deleteTrigger(t);
+  });
 }
 
 // Re-pull just today (partial) and re-render the Today tab. Cheap enough to run
@@ -743,7 +773,7 @@ function postSlack_(text) {
 // One daily sync (which also drives the backfill until it's caught up), plus the
 // Slack sends. Idempotent — running it repeatedly converges rather than stacking.
 
-var MANAGED_HANDLERS = ['sync', 'resumeSync', 'slackYesterday', 'slackToday'];
+var MANAGED_HANDLERS = ['sync', 'resumeSync', 'fullResync', 'slackYesterday', 'slackToday'];
 var RESUME_HANDLER   = 'resumeSync';   // distinct handler so we never delete the daily 'sync'
 
 function automationPlan_() {
@@ -1013,6 +1043,14 @@ function dateAdd_(ds, delta) {
   return Utilities.formatDate(d, 'UTC', 'yyyy-MM-dd');
 }
 
+// Whole days from a to b (both 'yyyy-MM-dd'); positive when b is later.
+function daysBetween_(a, b) {
+  var pa = a.split('-'), pb = b.split('-');
+  var da = Date.UTC(+pa[0], +pa[1] - 1, +pa[2]);
+  var db = Date.UTC(+pb[0], +pb[1] - 1, +pb[2]);
+  return Math.round((db - da) / 86400000);
+}
+
 function datesDesc_(days) {
   return Object.keys(days).sort(function (a, b) { return a < b ? 1 : (a > b ? -1 : 0); });
 }
@@ -1027,7 +1065,29 @@ function eachDateDesc_(from, to, fn) {
   while (d >= from) { fn(d); d = dateAdd_(d, -1); }
 }
 
+var _statusLog = [];
+
 function progress_(msg) {
   console.log(msg);
   try { SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'Triple Whale', 8); } catch (e) {}
+  try { setStatus_(msg); } catch (e) {}
+}
+
+// Persistent, live-updating status tab. Toasts vanish after a few seconds; this
+// stays and refreshes in place, so a long rebuild's progress is visible in the
+// sheet (and readable after the fact, including for automated runs).
+function setStatus_(msg) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('_status') || ss.insertSheet('_status', 0);
+  var ts = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd HH:mm:ss');
+  _statusLog.unshift(ts + '   ' + msg);
+  if (_statusLog.length > 50) _statusLog.length = 50;
+  sheet.getRange(1, 1).setValue('Triple Whale — status').setFontWeight('bold').setFontSize(12);
+  sheet.getRange(2, 1).setValue(msg);
+  sheet.getRange(3, 1).setValue('as of ' + ts);
+  sheet.getRange(5, 1).setValue('Recent activity (newest first):').setFontWeight('bold');
+  sheet.getRange(6, 1, 55, 1).clearContent();
+  var rows = _statusLog.map(function (l) { return [l]; });
+  if (rows.length) sheet.getRange(6, 1, rows.length, 1).setValues(rows);
+  SpreadsheetApp.flush();                        // push updates so they show live
 }
