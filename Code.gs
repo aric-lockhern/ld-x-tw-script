@@ -292,26 +292,27 @@ function fetchDayRows_(ds) {
   return aggregateDay_(ads, 'campaign', ds).concat(aggregateDay_(oa, 'channel', ds));
 }
 
-// Raw rows for one day and one channel set. A single query per day keeps each
-// scan small so the engine never times out. We match on channel OR provider_id
-// (order rows are sometimes tagged only by provider_id) and resolve an effective
-// channel below — this captures attributed revenue the old two-query version
-// silently dropped. Verify with Diagnostics → Diagnose a day.
+// Raw rows for one day, filtered to `channels` IN THE SCRIPT (not in SQL).
+//
+// IMPORTANT: we deliberately do NOT put a channel/provider_id predicate in the
+// WHERE clause. In Triple Whale's SQL a predicate on channel/provider_id is
+// pushed into pixel_joined_tvf() and suppresses the pixel ORDER rows — only the
+// ad-spend rows come back, which is why order_revenue/new-customer columns were
+// all 0. Selecting on spend/revenue returns the full joined set (ad rows AND
+// order rows, each already carrying its own `channel`); we keep just our
+// channels here. Confirmed against Diagnostics → Diagnose a day, where
+// channel=google-ads / channel=bing carry the real attributed revenue.
 function rawDay_(ds, channels) {
-  var inList = sqlList_(channels);
   var q = "SELECT * FROM pixel_joined_tvf()" +
     " WHERE event_date BETWEEN @startDate AND @endDate" +
-    " AND (channel IN " + inList + " OR provider_id IN " + inList + ")" +
+    " AND (spend > 0 OR order_revenue > 0)" +
     attrFilter_();
   var rows = extractRows_(postSql_({ shopId: SHOP_ID, currency: CURRENCY, query: q,
     period: { startDate: ds, endDate: ds } }));
-  // Resolve the channel we'll group under, and drop anything that matched neither.
   var out = [];
   rows.forEach(function (r) {
-    var ch = (channels.indexOf(r.channel) !== -1) ? r.channel
-           : (channels.indexOf(r.provider_id) !== -1) ? r.provider_id : null;
-    if (ch === null) return;
-    r._channel = ch;
+    if (channels.indexOf(r.channel) === -1) return;   // keep only our channels
+    r._channel = r.channel;
     out.push(r);
   });
   return out;
