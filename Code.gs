@@ -75,6 +75,14 @@ var BACKFILL_MAX_DAYS = 1460;           // ~4 years
 var EMPTY_RUN_TO_STOP = 21;
 var MAX_RUNTIME_MS    = 25 * 60 * 1000;
 
+// Optional hard floor for the backfill: a 'yyyy-MM-dd' date the backfill is
+// GUARANTEED to reach before it's allowed to stop on the empty-run heuristic.
+// Use this when you need history back to a specific date and the account may
+// have had a long dormant stretch (which would otherwise look like "start of
+// data"). Backfill still continues PAST this date, as far back as data exists.
+// Leave '' to rely on the empty-run heuristic alone.
+var BACKFILL_START    = '';             // e.g. '2025-06-01'
+
 // Window (in full days) shown on the Campaigns tab.
 var CAMPAIGNS_DAYS = 7;
 
@@ -211,8 +219,11 @@ function _syncLocked_() {
       days[cursor] = rows;
       oldest = cursor;
       backfilled++;
+      // Inside a forced range (>= BACKFILL_START) never stop on empties, so a
+      // dormant stretch can't be mistaken for the start of the data.
+      var forced = BACKFILL_START && cursor >= BACKFILL_START;
       if (rows.length) emptyRun = 0; else emptyRun++;
-      if (emptyRun >= EMPTY_RUN_TO_STOP) { dataStart = true; break; }
+      if (!forced && emptyRun >= EMPTY_RUN_TO_STOP) { dataStart = true; break; }
       if (backfilled % 10 === 0) progress_('Backfill: reached ' + cursor + '…');
       cursor = dateAdd_(cursor, -1);
       Utilities.sleep(30);
