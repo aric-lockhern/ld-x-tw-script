@@ -167,6 +167,7 @@ function onOpen() {
       .addItem('Validate API key', 'validateKey')
       .addItem('List channel ids', 'listChannels')
       .addItem('Diagnose a day (revenue coverage)', 'diagnoseDayPrompt')
+      .addItem('Probe revenue (where is it?)', 'probeRevenuePrompt')
       .addItem('Discover pixel columns', 'discoverPixel')
       .addItem('Show backfill state', 'backfillState'))
     .addToUi();
@@ -886,6 +887,66 @@ function diagnoseDay(ds) {
   SpreadsheetApp.getUi().alert('See _diag_day for ' + ds + '. Revenue under OTHER is what a channel-only ' +
     'filter would miss; revenue under provider_id=… is what this script now captures that the old one dropped.');
 }
+
+function probeRevenuePrompt() {
+  var ui = SpreadsheetApp.getUi();
+  var r = ui.prompt('Probe revenue', 'Enter a date (yyyy-MM-dd) with known sales to locate the pixel revenue:', ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  probeRevenue(r.getResponseText().trim());
+}
+
+// Definitive revenue probe for one day. Runs several WHERE variants and reports
+// rows / summed spend / summed order_revenue / summed orders for each, so we can
+// see (a) whether pixel revenue exists for the day at all, (b) whether the
+// model/window filter is what's zeroing it out, and (c) which channel/provider/
+// model tags the revenue rows actually carry. Also dumps the full column list of
+// one revenue row next to one spend row so we can spot the real field names.
+function probeRevenue(ds) {
+  assertShop_();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) { SpreadsheetApp.getUi().alert('Bad date: ' + ds); return; }
+  var period = { startDate: ds, endDate: ds };
+  var run = function (where) {
+    var q = "SELECT * FROM pixel_joined_tvf() WHERE event_date BETWEEN @startDate AND @endDate " + where + " LIMIT 5000";
+    return extractRows_(postSql_({ shopId: SHOP_ID, currency: CURRENCY, query: q, period: period }));
+  };
+  var summarize = function (label, rows) {
+    var sp = 0, rv = 0, od = 0, tags = {};
+    rows.forEach(function (r) {
+      sp += Number(r.spend) || 0; rv += Number(r.order_revenue) || 0; od += Number(r.orders_quantity) || 0;
+      if ((Number(r.order_revenue) || 0) > 0) {
+        var k = [r.channel || 'blank', r.provider_id || 'blank', r.model || 'blank', r.attribution_window || 'blank'].join(' | ');
+        tags[k] = (tags[k] || 0) + 1;
+      }
+    });
+    var sample = Object.keys(tags).slice(0, 8).map(function (k) { return k + ' ×' + tags[k]; }).join('   ;   ');
+    return [label, rows.length, round2_(sp), round2_(rv), round2_(od), sample];
+  };
+  var inAds = sqlList_(ADS_CHANNELS);
+  var matrix = [['query (event_date = ' + ds + ')', 'rows', 'sum spend', 'sum order_revenue', 'sum orders', 'revenue-row tags: channel|provider_id|model|attribution_window']];
+  matrix.push(summarize('1. order_revenue>0  (no model filter)',        run('AND order_revenue > 0')));
+  matrix.push(summarize('2. order_revenue>0  + model/window filter',    run('AND order_revenue > 0' + attrFilter_())));
+  matrix.push(summarize('3. channel IN ads',                            run('AND channel IN ' + inAds)));
+  matrix.push(summarize('4. channel IN ads  AND order_revenue>0',       run('AND channel IN ' + inAds + ' AND order_revenue > 0')));
+  matrix.push(summarize('5. channel IN ads  + model/window filter',     run('AND channel IN ' + inAds + attrFilter_())));
+  dumpDiag_('_probe_revenue', matrix);
+
+  // Full columns: one revenue row vs one spend row.
+  var revRow = run('AND order_revenue > 0')[0] || null;
+  var spendRow = run('AND channel IN ' + inAds + ' AND spend > 0')[0] || null;
+  var keys = {};
+  [revRow, spendRow].forEach(function (r) { if (r) Object.keys(r).forEach(function (k) { keys[k] = 1; }); });
+  var cols = [['column', 'revenue_row value', 'spend_row value']];
+  Object.keys(keys).sort().forEach(function (k) {
+    cols.push([k, revRow ? String(revRow[k]) : '(no revenue row)', spendRow ? String(spendRow[k]) : '(no spend row)']);
+  });
+  dumpDiag_('_probe_cols', cols);
+
+  SpreadsheetApp.getUi().alert('Done. Send me the _probe_revenue and _probe_cols tabs.\n\n' +
+    'Row 1 vs 2 shows whether the model filter zeroes revenue; rows 3–5 show whether ' +
+    'channel-matched rows carry any revenue; _probe_cols shows the real column names.');
+}
+
+function round2_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 
 function discoverPixel() {
   assertShop_();
