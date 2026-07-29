@@ -75,13 +75,13 @@ var BACKFILL_MAX_DAYS = 1460;           // ~4 years
 var EMPTY_RUN_TO_STOP = 21;
 var MAX_RUNTIME_MS    = 25 * 60 * 1000;
 
-// Optional hard floor for the backfill: a 'yyyy-MM-dd' date the backfill is
-// GUARANTEED to reach before it's allowed to stop on the empty-run heuristic.
-// Use this when you need history back to a specific date and the account may
-// have had a long dormant stretch (which would otherwise look like "start of
-// data"). Backfill still continues PAST this date, as far back as data exists.
-// Leave '' to rely on the empty-run heuristic alone.
-var BACKFILL_START    = '2026-06-01';   // guarantee history back to June 2026
+// Oldest date to pull ('yyyy-MM-dd'). This is a HARD limit: the backfill fills
+// every day from today back to exactly this date and then STOPS — it never pulls
+// anything older, and any older days already in the store are trimmed out. Set
+// it to the start of the range you want in the sheet.
+// Leave '' to instead pull as far back as data exists (using the empty-run
+// heuristic below to detect the start of the account's data).
+var BACKFILL_START    = '2026-06-01';   // pull June 1, 2026 → today, nothing older
 
 // Window (in full days) shown on the Campaigns tab.
 var CAMPAIGNS_DAYS = 7;
@@ -212,23 +212,29 @@ function _syncLocked_() {
 
   if (!dataStart) {
     var cursor = dateAdd_(oldest, -1);         // first day older than we've covered
-    var floor  = dateStr_(-BACKFILL_MAX_DAYS);
+    var floor  = BACKFILL_START || dateStr_(-BACKFILL_MAX_DAYS);   // stop here
     while (cursor >= floor) {
       if (Date.now() - t0 > MAX_RUNTIME_MS) { stopped = cursor; break; }
       var rows = fetchDayRows_(cursor);
       days[cursor] = rows;
       oldest = cursor;
       backfilled++;
-      // Inside a forced range (>= BACKFILL_START) never stop on empties, so a
-      // dormant stretch can't be mistaken for the start of the data.
-      var forced = BACKFILL_START && cursor >= BACKFILL_START;
       if (rows.length) emptyRun = 0; else emptyRun++;
-      if (!forced && emptyRun >= EMPTY_RUN_TO_STOP) { dataStart = true; break; }
+      // The empty-run "start of data" heuristic only applies in open-ended mode.
+      // With an explicit BACKFILL_START we always fill straight through to it.
+      if (!BACKFILL_START && emptyRun >= EMPTY_RUN_TO_STOP) { dataStart = true; break; }
       if (backfilled % 10 === 0) progress_('Backfill: reached ' + cursor + '…');
       cursor = dateAdd_(cursor, -1);
       Utilities.sleep(30);
     }
-    if (cursor < floor) dataStart = true;      // hit the backstop
+    if (cursor < floor) dataStart = true;      // reached the floor (or backstop) — done
+  }
+
+  // Enforce the hard start: drop anything older than BACKFILL_START (cleans up
+  // any days a previous, more-open-ended run may have pulled).
+  if (BACKFILL_START) {
+    Object.keys(days).forEach(function (d) { if (d < BACKFILL_START) delete days[d]; });
+    oldest = minKey_(days) || today;
   }
 
   props.setProperty(PROP_OLDEST, oldest);

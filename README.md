@@ -121,6 +121,6 @@ Run **Diagnostics → Diagnose a day** to confirm:
 | `REFRESH_DAYS` | recent days recomputed every sync — keep ≥ the attribution window |
 | `BACKFILL_MAX_DAYS` | hard backstop on how far back to probe |
 | `EMPTY_RUN_TO_STOP` | consecutive empty days that mean "start of data" |
-| `BACKFILL_START` | optional `yyyy-MM-dd` floor the backfill must reach before it can stop on the empty-run heuristic (set when you need history to a specific date and the account may have had a dormant stretch) |
+| `BACKFILL_START` | optional `yyyy-MM-dd` **hard oldest date**: fill from today back to exactly this date and stop; older days are never pulled and are trimmed from the store. Leave `''` to pull as far back as data exists. |
 | `MAX_RUNTIME_MS` | stop-and-save budget (25 min Workspace / drop to ~4.5 min on a consumer Gmail account) |
 | `CAMPAIGNS_DAYS` | window shown on the Campaigns tab |
