@@ -81,7 +81,7 @@ var MAX_RUNTIME_MS    = 25 * 60 * 1000;
 // have had a long dormant stretch (which would otherwise look like "start of
 // data"). Backfill still continues PAST this date, as far back as data exists.
 // Leave '' to rely on the empty-run heuristic alone.
-var BACKFILL_START    = '';             // e.g. '2025-06-01'
+var BACKFILL_START    = '2026-06-01';   // guarantee history back to June 2026
 
 // Window (in full days) shown on the Campaigns tab.
 var CAMPAIGNS_DAYS = 7;
