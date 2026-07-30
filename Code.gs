@@ -606,7 +606,7 @@ function renderCampaignByDay_(days) {
     recs.sort(function (a, b) { return num_(b.total_spend) - num_(a.total_spend); });
     recs.forEach(function (rec) { rec.date = d; out.push(recordToRow_(rec, cols)); });
   });
-  writeRows_(CAMPAIGN_DAY_SHEET, cols, out, out.length + ' rows', false, true);
+  writeRows_(CAMPAIGN_DAY_SHEET, cols, out, out.length + ' rows', false);
 }
 
 // ---- By Day - OpenAI (channel level) ----
@@ -652,7 +652,10 @@ function writeGrid_(name, cols, recs, periodText, pinFirst) {
 }
 
 // Generic writer for a pre-built 2D grid (By Day / By Day - Campaign / OpenAI).
-function writeRows_(name, cols, rows2d, periodText, pinFirst, dateAsText) {
+// Column 1 is always Date on these tabs, and it is written as a REAL date value
+// (not text) so downstream IMPORTRANGE + SUMIFS date comparisons work. (The
+// hidden _store keeps text date keys — that's separate and internal.)
+function writeRows_(name, cols, rows2d, periodText, pinFirst) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(name) || ss.insertSheet(name);
   var f = sheet.getFilter(); if (f) f.remove();
@@ -661,12 +664,13 @@ function writeRows_(name, cols, rows2d, periodText, pinFirst, dateAsText) {
   headerRow_(sheet, header);
   if (name === CAMPAIGN_DAY_SHEET) sheet.setFrozenColumns(2);
   if (!rows2d.length) { sheet.getRange(2, 1).setValue('No data.'); stamp_(sheet, header.length, periodText); return; }
-  sheet.getRange(2, 1, rows2d.length, header.length).setValues(rows2d);
-  applyFormats_(sheet, cols, 2, rows2d.length);
-  if (dateAsText) sheet.getRange(2, 1, rows2d.length, 1).setNumberFormat('@');
+  var body = rows2d.map(function (r) { var c = r.slice(); c[0] = parseYmd_(c[0]); return c; });
+  sheet.getRange(2, 1, body.length, header.length).setValues(body);
+  applyFormats_(sheet, cols, 2, body.length);
+  sheet.getRange(2, 1, body.length, 1).setNumberFormat('yyyy-mm-dd');   // real dates
   // autoResize is slow on huge tabs — only for modest ones.
-  if (rows2d.length <= 2000) sheet.autoResizeColumns(1, header.length);
-  if (name === CAMPAIGN_DAY_SHEET) sheet.getRange(1, 1, rows2d.length + 1, header.length).createFilter();
+  if (body.length <= 2000) sheet.autoResizeColumns(1, header.length);
+  if (name === CAMPAIGN_DAY_SHEET) sheet.getRange(1, 1, body.length + 1, header.length).createFilter();
   stamp_(sheet, header.length, periodText);
 }
 
@@ -1041,6 +1045,14 @@ function dateAdd_(ds, delta) {
   var d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
   d.setUTCDate(d.getUTCDate() + delta);
   return Utilities.formatDate(d, 'UTC', 'yyyy-MM-dd');
+}
+
+// 'yyyy-MM-dd' -> a real Date (local midnight). Non-date / blank values pass
+// through unchanged so header/placeholder cells aren't mangled.
+function parseYmd_(s) {
+  if (s instanceof Date) return s;
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : s;
 }
 
 // Whole days from a to b (both 'yyyy-MM-dd'); positive when b is later.
