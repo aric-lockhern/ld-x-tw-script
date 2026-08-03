@@ -778,6 +778,14 @@ function postSlack_(text) {
 // Slack sends. Idempotent — running it repeatedly converges rather than stacking.
 
 var MANAGED_HANDLERS = ['sync', 'resumeSync', 'fullResync', 'slackYesterday', 'slackToday'];
+
+// Trigger handlers from the OLD version of this script. Their functions no
+// longer exist, so any leftover trigger for them fails on every run (and emails
+// a failure notice). ensureAutomation() and removeAllAutomation() purge these.
+var LEGACY_HANDLERS = ['refreshAll', 'pullAttributed', 'pullToday', 'pullYesterday',
+  'pullByDay', 'pullByDayRecent', 'pullByDayOpenAI', 'pullByDayOpenAIRecent',
+  'pullCampaignByDay', 'pullCampaignByDayRecent', 'pullCampaignByDayFull',
+  'backfillCampaignByDay'];
 var RESUME_HANDLER   = 'resumeSync';   // distinct handler so we never delete the daily 'sync'
 
 function automationPlan_() {
@@ -800,6 +808,13 @@ function ensureAutomation(verbose) {
     var f = t.getHandlerFunction();
     (existing[f] = existing[f] || []).push(t);
   });
+  // Purge leftover triggers from the OLD script (missing functions failing hourly).
+  var purged = 0;
+  (ScriptApp.getProjectTriggers()).forEach(function (t) {
+    if (LEGACY_HANDLERS.indexOf(t.getHandlerFunction()) !== -1) { ScriptApp.deleteTrigger(t); purged++; }
+  });
+  if (purged) report.push('🧹 removed ' + purged + ' leftover trigger(s) from the old script');
+
   automationPlan_().forEach(function (w) {
     var have = (existing[w.fn] || []).length;
     if (have === w.count) { report.push('✓ ' + w.fn + ' — ok'); return; }
@@ -848,7 +863,8 @@ function removeAllAutomation() {
       ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
   var n = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (MANAGED_HANDLERS.indexOf(t.getHandlerFunction()) !== -1) { ScriptApp.deleteTrigger(t); n++; }
+    var f = t.getHandlerFunction();
+    if (MANAGED_HANDLERS.indexOf(f) !== -1 || LEGACY_HANDLERS.indexOf(f) !== -1) { ScriptApp.deleteTrigger(t); n++; }
   });
   ui.alert('Removed ' + n + ' trigger(s).');
 }
