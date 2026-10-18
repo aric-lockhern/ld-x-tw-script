@@ -170,6 +170,7 @@ function onOpen() {
       .addItem('Diagnose a day (revenue coverage)', 'diagnoseDayPrompt')
       .addItem('Probe revenue (where is it?)', 'probeRevenuePrompt')
       .addItem('Discover pixel columns', 'discoverPixel')
+      .addItem('Test query shape (UNION error)', 'testQueryShape')
       .addItem('Show backfill state', 'backfillState'))
     .addToUi();
 }
@@ -332,8 +333,18 @@ function fetchDayRows_(ds) {
 // order rows, each already carrying its own `channel`); we keep just our
 // channels here. Confirmed against Diagnostics → Diagnose a day, where
 // channel=google-ads / channel=bing carry the real attributed revenue.
+//
+// Columns are named explicitly rather than SELECT *. pixel_joined_tvf() is a
+// UNION of an ad-spend branch and an order branch; when Triple Whale adds a
+// column to one branch, SELECT * expands the two differently and the whole query
+// fails with "UNION different number of columns in queries". Naming only what
+// sumInto_() reads keeps both branches the same shape.
+var DAY_COLUMNS = ['channel', 'campaign_name', 'spend', 'order_revenue', 'orders_quantity',
+  'new_customer_orders', 'new_customer_order_revenue', 'channel_reported_conversions',
+  'channel_reported_conversion_value', 'clicks', 'impressions'];
+
 function rawDay_(ds, channels) {
-  var q = "SELECT * FROM pixel_joined_tvf()" +
+  var q = "SELECT " + DAY_COLUMNS.join(', ') + " FROM pixel_joined_tvf()" +
     " WHERE event_date BETWEEN @startDate AND @endDate" +
     " AND (spend > 0 OR order_revenue > 0)" +
     attrFilter_();
@@ -921,7 +932,8 @@ function diagnoseDayPrompt() {
 function diagnoseDay(ds) {
   assertShop_();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) { SpreadsheetApp.getUi().alert('Bad date: ' + ds); return; }
-  var q = "SELECT * FROM pixel_joined_tvf() WHERE event_date BETWEEN @startDate AND @endDate" +
+  var q = "SELECT " + DAY_COLUMNS.concat(['provider_id']).join(', ') +
+    " FROM pixel_joined_tvf() WHERE event_date BETWEEN @startDate AND @endDate" +
     " AND (order_revenue > 0 OR spend > 0)" + attrFilter_();
   var rows = extractRows_(postSql_({ shopId: SHOP_ID, currency: CURRENCY, query: q, period: { startDate: ds, endDate: ds } }));
   var bucket = {};   // label -> {rows, spend, revenue}
@@ -995,6 +1007,35 @@ function probeRevenue(ds) {
   SpreadsheetApp.getUi().alert('Done. Send me the _probe_revenue and _probe_cols tabs.\n\n' +
     'Row 1 vs 2 shows whether the model filter zeroes revenue; rows 3–5 show whether ' +
     'channel-matched rows carry any revenue; _probe_cols shows the real column names.');
+}
+
+// Runs yesterday's day query three ways and reports which ones the API accepts.
+// Use it when a sync fails with "UNION different number of columns": if SELECT *
+// fails and the explicit list passes, Triple Whale changed the TVF's shape and the
+// explicit list is the workaround; if the explicit list fails too, the error is
+// inside pixel_joined_tvf() itself and needs Triple Whale support.
+function testQueryShape() {
+  assertShop_();
+  var ds = dateStr_(-1);
+  var where = " FROM pixel_joined_tvf() WHERE event_date BETWEEN @startDate AND @endDate" +
+    " AND (spend > 0 OR order_revenue > 0)";
+  var variants = [
+    ['SELECT * + model/window filter',             'SELECT *' + where + attrFilter_()],
+    ['explicit columns + model/window filter',     'SELECT ' + DAY_COLUMNS.join(', ') + where + attrFilter_()],
+    ['explicit columns, no model/window filter',   'SELECT ' + DAY_COLUMNS.join(', ') + where],
+  ];
+  var out = [['variant (' + ds + ')', 'result', 'rows', 'detail']];
+  variants.forEach(function (v) {
+    try {
+      var rows = extractRows_(postSql_({ shopId: SHOP_ID, currency: CURRENCY, query: v[1] + ' LIMIT 5000',
+        period: { startDate: ds, endDate: ds } }));
+      out.push([v[0], 'OK', rows.length, '']);
+    } catch (e) {
+      out.push([v[0], 'FAILED', '', String(e.message || e).slice(0, 300)]);
+    }
+  });
+  dumpDiag_('_query_shape', out);
+  SpreadsheetApp.getUi().alert('See the _query_shape tab.');
 }
 
 function round2_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
