@@ -150,3 +150,12 @@ stored history only grows. To force a reconcile any time, use **Sync now**.
 | `BACKFILL_START` | optional `yyyy-MM-dd` **hard oldest date**: fill from today back to exactly this date and stop; older days are never pulled and are trimmed from the store. Leave `''` to pull as far back as data exists. |
 | `MAX_RUNTIME_MS` | stop-and-save budget (25 min Workspace / drop to ~4.5 min on a consumer Gmail account) |
 | `CAMPAIGNS_DAYS` | window shown on the Campaigns tab |
+
+---
+
+## EU store
+
+`EU/Code.gs` is the same script for the EU shop (`shopxeroshoes-eu.myshopify.com`,
+EUR, € number formats). It's a separate Apps Script bound to the EU spreadsheet.
+When you change the root `Code.gs`, make the same change in `EU/Code.gs`; the two
+should differ only in `SHOP_ID`, `CURRENCY` and the currency symbol.
